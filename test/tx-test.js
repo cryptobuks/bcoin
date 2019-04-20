@@ -22,10 +22,12 @@ const KeyRing = require('../lib/primitives/keyring');
 const Address = require('../lib/primitives/address');
 const BufferWriter = require('bufio').BufferWriter;
 const common = require('./util/common');
+const nodejsUtil = require('util');
 
-const validTests = require('./data/tx-valid.json');
-const invalidTests = require('./data/tx-invalid.json');
-const sighashTests = require('./data/sighash-tests.json');
+// test files: https://github.com/bitcoin/bitcoin/tree/master/src/test/data
+const validTests = require('./data/core-data/tx-valid.json');
+const invalidTests = require('./data/core-data/tx-invalid.json');
+const sighashTests = require('./data/core-data/sighash-tests.json');
 
 const tx1 = common.readTX('tx1');
 const tx2 = common.readTX('tx2');
@@ -1110,5 +1112,14 @@ describe('TX', function() {
     const value2 = mtx2.getInputValue();
 
     assert.strictEqual(value1, value2);
+  });
+
+  it('should inspect TX', () => {
+    const tx = new TX();
+    const fmt = nodejsUtil.format(tx);
+    assert(typeof fmt === 'string');
+    assert(fmt.includes('hash'));
+    assert(fmt.includes('version'));
+    assert(fmt.includes('locktime'));
   });
 });

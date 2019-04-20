@@ -18,12 +18,18 @@ const Input = require('../lib/primitives/input');
 const Outpoint = require('../lib/primitives/outpoint');
 const Script = require('../lib/script/script');
 const HD = require('../lib/hd');
+const Wallet = require('../lib/wallet/wallet');
+const nodejsUtil = require('util');
 
 const KEY1 = 'xprv9s21ZrQH143K3Aj6xQBymM31Zb4BVc7wxqfUhMZrzewdDVCt'
   + 'qUP9iWfcHgJofs25xbaUpCps9GDXj83NiWvQCAkWQhVj5J4CorfnpKX94AZ';
 
 const KEY2 = 'xprv9s21ZrQH143K3mqiSThzPtWAabQ22Pjp3uSNnZ53A5bQ4udp'
   + 'faKekc2m4AChLYH1XDzANhrSdxHYWUeTWjYJwFwWFyHkTMnMeAcW4JyRCZa';
+
+// abandon abandon... about key at m'/44'/0'/0'
+const PUBKEY = 'xpub6BosfCnifzxcFwrSzQiqu2DBVTshkCXacvNsWGYJVVhhaw'
+  + 'A7d4R5WSWGFNbi8Aw6ZRc1brxMyWMzG3DSSSSoekkudhUd9yLb6qx39T9nMdj';
 
 const enabled = true;
 const workers = new WorkerPool({ enabled });
@@ -825,6 +831,30 @@ describe('Wallet', function() {
     assert.strictEqual(account.n, 1);
   });
 
+  it('should inspect Wallet', async () => {
+    const wallet = await wdb.create();
+
+    const fmt = nodejsUtil.format(wallet);
+    assert(typeof fmt === 'string');
+    assert(fmt.includes('master'));
+    assert(fmt.includes('network'));
+    assert(fmt.includes('accountDepth'));
+  });
+
+  it('should inspect Account', async () => {
+    const wallet = await wdb.create();
+    const account = await wallet.createAccount({
+      name: 'foo'
+    });
+
+    const fmt = nodejsUtil.format(account);
+    assert(typeof fmt === 'string');
+    assert(fmt.includes('name'));
+    assert(fmt.includes('foo'));
+    assert(fmt.includes('initialized'));
+    assert(fmt.includes('lookahead'));
+  });
+
   it('should fail to create duplicate account', async () => {
     const wallet = await wdb.create();
     const name = 'foo';
@@ -1215,6 +1245,40 @@ describe('Wallet', function() {
     assert(t3.verify());
   });
 
+  for (const witness of [true, false]) {
+    it(`should create non-templated tx (witness=${witness})`, async () => {
+      const wallet = await wdb.create({ witness });
+
+      // Fund wallet
+      const t1 = new MTX();
+      t1.addInput(dummyInput());
+      t1.addOutput(await wallet.receiveAddress(), 500000);
+
+      await wdb.addTX(t1.toTX());
+
+      const options = {
+        rate: 10000,
+        round: true,
+        outputs: [{
+          address: await wallet.receiveAddress(),
+          value: 7000
+        }],
+        template: false
+      };
+
+      const t2 = await wallet.createTX(options);
+
+      assert(t2, 'Could not create tx.');
+
+      for (const input of t2.inputs) {
+        const {script, witness} = input;
+
+        assert.strictEqual(script.length, 0, 'Input is templated.');
+        assert.strictEqual(witness.length, 0, 'Input is templated.');
+      }
+    });
+  }
+
   it('should get range of txs', async () => {
     const wallet = currentWallet;
     const txs = await wallet.getRange(null, {
@@ -1301,12 +1365,31 @@ describe('Wallet', function() {
     importedKey = key;
   });
 
+  it('should require account key to create watch only wallet', async () => {
+    let err = null;
+
+    try {
+      await wdb.create({
+        watchOnly: true
+      });
+    } catch (e) {
+      err = e;
+    }
+
+    assert(err);
+    assert.strictEqual(
+      err.message,
+      'Must add HD public keys to watch only wallet.'
+    );
+  });
+
   it('should import pubkey', async () => {
     const key = KeyRing.generate();
     const pub = new KeyRing(key.publicKey);
 
     const wallet = await wdb.create({
-      watchOnly: true
+      watchOnly: true,
+      accountKey: PUBKEY
     });
 
     await wallet.importKey('default', pub);
@@ -1322,7 +1405,8 @@ describe('Wallet', function() {
     const key = KeyRing.generate();
 
     const wallet = await wdb.create({
-      watchOnly: true
+      watchOnly: true,
+      accountKey: PUBKEY
     });
 
     await wallet.importAddress('default', key.getAddress());
@@ -1617,6 +1701,21 @@ describe('Wallet', function() {
       assert.strictEqual(addresses.size, 100);
     });
   }
+
+  it('should throw error with missing outputs', async () => {
+    const wallet = new Wallet({});
+
+    let err = null;
+
+    try {
+       await wallet.send({outputs: []});
+    } catch (e) {
+      err = e;
+   }
+
+    assert(err);
+    assert.equal(err.message, 'At least one output required.');
+  });
 
   it('should cleanup', async () => {
     consensus.COINBASE_MATURITY = 100;

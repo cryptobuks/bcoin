@@ -15,8 +15,10 @@ const KeyRing = require('../lib/primitives/keyring');
 const Address = require('../lib/primitives/address');
 const Outpoint = require('../lib/primitives/outpoint');
 const Script = require('../lib/script/script');
+const opcodes = Script.opcodes;
 const Witness = require('../lib/script/witness');
 const MemWallet = require('./util/memwallet');
+const BlockStore = require('../lib/blockstore/level');
 const ALL = Script.hashType.ALL;
 
 const ONE_HASH = Buffer.alloc(32, 0x00);
@@ -26,9 +28,14 @@ const workers = new WorkerPool({
   enabled: true
 });
 
+const blocks = new BlockStore({
+  memory: true
+});
+
 const chain = new Chain({
   memory: true,
-  workers
+  workers,
+  blocks
 });
 
 const mempool = new Mempool({
@@ -67,6 +74,7 @@ describe('Mempool', function() {
 
   it('should open mempool', async () => {
     await workers.open();
+    await blocks.open();
     await chain.open();
     await mempool.open();
     chain.state.flags |= Script.flags.VERIFY_WITNESS;
@@ -175,6 +183,56 @@ describe('Mempool', function() {
     assert(txs.some((tx) => {
       return tx.hash().equals(f1.hash());
     }));
+  });
+
+  it('should get spend coins and reflect in coinview', async () => {
+    const wallet = new MemWallet();
+    const script = Script.fromAddress(wallet.getAddress());
+    const dummyCoin = dummyInput(script, random.randomBytes(32));
+
+    // spend first output
+    const mtx1 = new MTX();
+    mtx1.addOutput(wallet.getAddress(), 50000);
+    mtx1.addCoin(dummyCoin);
+    wallet.sign(mtx1);
+
+    // spend second tx
+    const tx1 = mtx1.toTX();
+    const coin1 = Coin.fromTX(tx1, 0, -1);
+    const mtx2 = new MTX();
+
+    mtx2.addOutput(wallet.getAddress(), 10000);
+    mtx2.addOutput(wallet.getAddress(), 30000); // 10k fee..
+    mtx2.addCoin(coin1);
+
+    wallet.sign(mtx2);
+
+    const tx2 = mtx2.toTX();
+
+    await mempool.addTX(tx1);
+
+    {
+      const view = await mempool.getCoinView(tx2);
+      assert(view.hasEntry(coin1));
+    }
+
+    await mempool.addTX(tx2);
+
+    // we should not have coins available in the mempool for these txs.
+    {
+      const view = await mempool.getCoinView(tx1);
+      const sview = await mempool.getSpentView(tx1);
+
+      assert(!view.hasEntry(dummyCoin));
+      assert(sview.hasEntry(dummyCoin));
+    }
+
+    {
+      const view = await mempool.getCoinView(tx2);
+      const sview = await mempool.getSpentView(tx2);
+      assert(!view.hasEntry(coin1));
+      assert(sview.hasEntry(coin1));
+    }
   });
 
   it('should handle locktime', async () => {
@@ -287,6 +345,54 @@ describe('Mempool', function() {
     assert(!mempool.hasReject(tx.hash()));
   });
 
+  it('should cache a non-malleated tx with non-empty stack', async () => {
+    // Wrap in P2SH, so we pass standardness checks.
+    const key = KeyRing.generate();
+
+    {
+      const script = new Script();
+      script.pushOp(opcodes.OP_1);
+      script.compile();
+      key.script = script;
+    }
+
+    const wallet = new MemWallet();
+    const script = Script.fromAddress(wallet.getAddress());
+    const dummyCoin = dummyInput(script, random.randomBytes(32));
+
+    // spend first output
+    const t1 = new MTX();
+    t1.addOutput(key.getAddress(), 50000);
+    t1.addCoin(dummyCoin);
+    wallet.sign(t1);
+
+    const t2 = new MTX();
+    t2.addCoin(Coin.fromTX(t1, 0, 0));
+    t2.addOutput(wallet.getAddress(), 40000);
+
+    {
+      const script = new Script();
+      script.pushOp(opcodes.OP_1);
+      script.pushData(key.script.toRaw());
+      script.compile();
+
+      t2.inputs[0].script = script;
+    }
+
+    await mempool.addTX(t1.toTX());
+
+    let err;
+    try {
+      await mempool.addTX(t2.toTX());
+    } catch (e) {
+      err = e;
+    }
+
+    assert(err);
+    assert(!err.malleated);
+    assert(mempool.hasReject(t2.hash()));
+  });
+
   it('should not cache a malleated wtx with wit removed', async () => {
     const key = KeyRing.generate();
 
@@ -354,6 +460,7 @@ describe('Mempool', function() {
   it('should destroy mempool', async () => {
     await mempool.close();
     await chain.close();
+    await blocks.close();
     await workers.close();
   });
 });

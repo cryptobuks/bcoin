@@ -11,6 +11,7 @@ const Block = require('../lib/primitives/block');
 const MerkleBlock = require('../lib/primitives/merkleblock');
 const consensus = require('../lib/protocol/consensus');
 const Script = require('../lib/script/script');
+const nodejsUtil = require('util');
 const bip152 = require('../lib/net/bip152');
 const CompactBlock = bip152.CompactBlock;
 const TXRequest = bip152.TXRequest;
@@ -27,6 +28,9 @@ const block426884 = common.readBlock('block426884');
 const compact426884 = common.readCompact('compact426884');
 const block898352 = common.readBlock('block898352');
 const compact898352 = common.readCompact('compact898352');
+
+// Small SegWit block test vector
+const block482683 = common.readBlock('block482683');
 
 // Sigops counting test vectors
 // Format: [name, sigops, weight]
@@ -100,6 +104,14 @@ describe('Block', function() {
     assert.strictEqual(block2.rhash(),
       '0000000000000000821c4e0acc40f88bedbce3b73ba2358b5ade58a9022cc78c');
     assert.bufferEqual(block2.merkleRoot, block2.createMerkleRoot());
+  });
+
+  it('should inspect a block with a witness commitment', () => {
+    const [block] = block482683.getBlock();
+    const fmt = nodejsUtil.format(block);
+    assert(typeof fmt === 'string');
+    assert(fmt.includes('Block'));
+    assert(fmt.includes('commitmentHash'));
   });
 
   it('should create a merkle block', () => {
